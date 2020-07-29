@@ -5,27 +5,28 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\LazyCollection;
 
 /**
- * This route will throw an out of memory exception.
+ * Throws an out of memory exception.
  *
  */
 Route::get('eager', function () {
-    return Collection::times(1000 * 1000 * 1000 * 1000)
+    return Collection::times(1000 * 1000 * 1000)
         ->filter(fn ($number) => $number % 2 == 0)
         ->take(1000);
 });
 
 /**
- * This route will return the first 1,000 even numbers.
+ * Returns the first 1,000 even numbers.
  *
  */
 Route::get('lazy', function () {
-    return LazyCollection::times(1000 * 1000 * 1000 * 1000)
+    return LazyCollection::times(1000 * 1000 * 1000)
         ->filter(fn ($number) => $number % 2 == 0)
-        ->take(1000);
+        ->take(1000)
+        ->values();
 });
 
 /**
- * This route will only dump "1".
+ * Only dumps "1".
  *
  */
 Route::get('multiple-returns', function () {
@@ -38,7 +39,7 @@ Route::get('multiple-returns', function () {
 });
 
 /**
- * This route will dump a Generator object.
+ * Dumps a Generator object.
  *
  */
 Route::get('generator', function () {
@@ -52,7 +53,7 @@ Route::get('generator', function () {
 });
 
 /**
- * This route will dump:
+ * Dumps:
  *     "Did we get here?"
  *     "1"
  */
@@ -63,7 +64,7 @@ Route::get('generator-current', function () {
         yield 2;
     };
 
-    $generator = run();
+    $generator = $run();
 
     $firstValue = $generator->current();
 
@@ -71,7 +72,7 @@ Route::get('generator-current', function () {
 });
 
 /**
- * This route will dump: "2".
+ * Dumps: "2".
  *
  */
 Route::get('generator-next', function () {
@@ -80,7 +81,7 @@ Route::get('generator-next', function () {
         yield 2;
     };
 
-    $generator = run();
+    $generator = $run();
 
     $firstValue = $generator->current();
     $generator->next();
@@ -90,7 +91,7 @@ Route::get('generator-next', function () {
 });
 
 /**
- * This route will dump:
+ * Dumps:
  *     "1"
  *     "2"
  *     "3"
@@ -112,7 +113,7 @@ Route::get('inifinite-loop', function () {
 });
 
 /**
- * This route will dump the numbers 1-20.
+ * Dumps the numbers 1-20.
  *
  */
 Route::get('foreach', function () {
@@ -130,3 +131,176 @@ Route::get('foreach', function () {
         if ($number == 20) break;
     }
 });
+
+/**
+ * Also dumps the numbers 1-20.
+ *
+ */
+Route::get('composition', function () {
+    $generate_numbers = function () {
+        $number = 1;
+
+        while (true) yield $number++;
+    };
+
+    $take = function ($generator, $limit) {
+        foreach ($generator as $index => $value) {
+            if ($index == $limit) break;
+
+            yield $value;
+        }
+    };
+
+    $generator = $generate_numbers();
+
+    foreach ($take($generate_numbers(), 20) as $number) {
+        dump($number);
+    }
+});
+
+/**
+ * Returns the numbers 1-10.
+ *
+ */
+Route::get('lazy-collection', function () {
+    $collection = LazyCollection::make(function () {
+        $number = 1;
+
+        while (true) {
+            yield $number++;
+        }
+    });
+
+    return $collection->take(10);
+});
+
+/**
+ * Dumps the first 1,000 even numbers.
+ *
+ */
+Route::get('lazy-collection-inifnite', function () {
+    LazyCollection::times(INF)
+        ->filter(fn ($number) => $number % 2 == 0)
+        ->take(1000)
+        ->each(fn ($number) => dump($number));
+});
+
+/**
+ * Streams a 39MB CSV file of fake logins.
+ *
+ */
+Route::get('streamed-download', function () {
+    $logins = LazyCollection::times(1000 * 1000, fn () => [
+        'user_id' => 24,
+        'name' => 'Houdini',
+        'logged_in_at' => now()->toIsoString(),
+    ]);
+
+    return response()->streamDownload(function () use ($logins) {
+        $csvWriter = Writer::createFromFileObject(
+            new SplFileObject('php://output', 'w+')
+        );
+
+        $csvWriter->insertOne(['User ID', 'Name', 'Login Time']);
+
+        $csvWriter->insertAll($logins);
+    }, 'logins.csv');
+});
+
+/**
+ * Writes a fake login records to the `storage/app/logins.ndjson` file.
+ *
+ */
+Route::get('writing-lazily', function () {
+    LazyCollection::times(10 * 1000)
+        ->flatMap(fn () => [
+            ['user_id' => 1, 'name' => 'Jinfeng'],
+            ['user_id' => 2, 'name' => 'Alice'],
+        ])
+        ->map(fn ($user, $index) => array_merge($user, [
+            'timestamp' => now()->addSeconds($index)->toIsoString(),
+        ]))
+        ->map(fn ($entry) => json_encode($entry))
+        ->each(fn ($json) => Storage::append('logins.ndjson', $json));
+
+    return 'Done.';
+});
+
+/**
+ * Reads the `storage/app/logins.ndjson` file lazily,
+ * and dumps the amount of logins from Alice.
+ *
+ */
+Route::get('reading-lazily', function () {
+    $logins = LazyCollection::make(function () {
+        $handle = fopen(storage_path('app/logins.ndjson'), 'r');
+
+        while (($line = fgets($handle)) !== false) {
+            yield $line;
+        }
+    });
+
+    return $logins
+        ->map(fn ($json) => json_decode($json))
+        ->filter()
+        ->where('name', 'Alice')
+        ->count();
+});
+
+/**
+ * Reads the `storage/app/logins.ndjson` file,
+ * and streams each record into a CSV file,
+ * all done lazily with virtually no memory.
+ *
+ */
+Route::get('read-and-stream', function () {
+    $logins = LazyCollection::make(function () {
+        $handle = fopen(storage_path('app/logins.ndjson'), 'r');
+
+        while (($line = fgets($handle)) !== false) {
+            yield $line;
+        }
+    })
+    ->map(fn ($json) => json_decode($json, true))
+    ->filter();
+
+    return response()->streamDownload(function () use ($logins) {
+        $csvWriter = Writer::createFromFileObject(
+            new SplFileObject('php://output', 'w+')
+        );
+
+        $csvWriter->insertOne(['User ID', 'Name', 'Login Time']);
+
+        $csvWriter->insertAll($logins);
+    }, 'logins.csv');
+});
+
+/**
+ * Converts an eager collection to a lazy collection
+ * to count customer in France with a balance over 100 euros.
+ *
+ */
+Route::get('convert-to-lazy', function () {
+    return get_all_customers_from_quickbooks()
+        ->lazy()
+        ->where('country', 'FR')
+        ->where('balance', '>', 100)
+        ->count();
+});
+
+
+
+
+
+
+/**
+ * A mock function that ostensibely returns
+ * all customers in QuickBooks.
+ */
+function get_all_customers_from_quickbooks() : Collection
+{
+    return Collection::times(10 * 1000, fn () => [
+        'country' => ['CH', 'DE', 'FR', 'MX', 'UK', 'USA'][rand(0, 5)],
+        'balance' => rand(50, 150),
+    ]);
+}
